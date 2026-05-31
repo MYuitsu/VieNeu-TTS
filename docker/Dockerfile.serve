@@ -1,11 +1,10 @@
-FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+# Builder stage: install build tools and create a complete virtualenv
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/root/.cache/huggingface \
-    PATH="/workspace/.venv/bin:$PATH"
+    HF_HOME=/root/.cache/huggingface
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -13,36 +12,83 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
     python3.12-dev \
     build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    libbz2-dev \
+    liblzma-dev \
+    zlib1g-dev \
     git \
     curl \
     wget \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure C compiler environment variables point to the installed compilers
+ENV CC=gcc CXX=g++
+
+# Some build tools expect distribution-prefixed compiler names (e.g. x86_64-linux-gnu-gcc)
+# Create safe symlinks so CMake can find them when referenced via CC/CXX or by build scripts
+RUN if [ ! -e /usr/bin/x86_64-linux-gnu-gcc ]; then ln -s "$(which gcc)" /usr/bin/x86_64-linux-gnu-gcc; fi \
+    && if [ ! -e /usr/bin/x86_64-linux-gnu-g++ ]; then ln -s "$(which g++)" /usr/bin/x86_64-linux-gnu-g++; fi
+
 # Install bore (for tunneling)
 RUN curl -LsSf https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar zxf - -C /usr/local/bin
 
-# Install pip and uv
-# Install uv directly
+# Install uv from upstream image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /workspace
 
-# Copy only requirements first
-COPY pyproject.toml uv.lock ./
-# Note: We use --no-dev and only gpu group
+# Copy only pyproject first and create virtualenv with dependencies
+COPY pyproject.toml ./
 RUN uv sync --no-dev --group gpu --no-install-project
 
-# Copy the rest
+# Copy full source and install project into the venv
 COPY . .
-
-# Install the project itself (creates the vieneu-serve CLI)
 RUN uv sync --no-dev --group gpu
 
-# Expose LMDeploy port
+# Ensure pip/tooling up-to-date in the created venv, force reinstall project so
+# compiled extensions are built in the builder stage (not at runtime). Build
+# wheels for known native deps to make installation deterministic.
+RUN /workspace/.venv/bin/python -m pip install --upgrade pip setuptools wheel && \
+    /workspace/.venv/bin/pip install --no-deps --force-reinstall /workspace || true && \
+    mkdir -p /wheels && \
+    /workspace/.venv/bin/pip wheel --no-deps --wheel-dir=/wheels llama-cpp-python==0.3.16 || true && \
+    /workspace/.venv/bin/pip wheel --no-deps --wheel-dir=/wheels llvmlite || true && \
+    /workspace/.venv/bin/pip install --no-deps --find-links=/wheels llama-cpp-python==0.3.16 || true && \
+    /workspace/.venv/bin/pip install --no-deps --find-links=/wheels llvmlite || true && \
+    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
+
+# Final stage: minimal runtime image
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/root/.cache/huggingface \
+    PATH="/workspace/.venv/bin:$PATH"
+
+# Install only runtime Python (no dev/build packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy uv runtime binary
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy built virtualenv and source from builder
+COPY --from=builder /workspace/.venv /workspace/.venv
+COPY --from=builder /workspace /workspace
+
+WORKDIR /workspace
+
+# Expose API server port
 EXPOSE 23333
 
-# Use Python to run the serve module directly
-ENTRYPOINT ["uv", "run", "python", "src/vieneu/serve.py"]
+# Use system Python to run the serve module; venv binaries are on PATH so installed
+# packages and console scripts will be available. Using system Python avoids
+# occasional missing-symlink exec errors during container init.
+ENTRYPOINT ["/usr/bin/python3", "-u", "src/vieneu/serve.py"]
 # Default arguments
-CMD ["--model", "pnnbao-ump/VieNeu-TTS", "--tunnel"]
+CMD ["--backend", "vllm", "--model", "pnnbao-ump/VieNeu-TTS", "--port", "23333", "--tunnel"]
