@@ -74,6 +74,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure a generic `python3` binary exists for scripts and venvs that reference it
+RUN if [ ! -e /usr/bin/python3 ] && [ -e /usr/bin/python3.12 ]; then ln -s /usr/bin/python3.12 /usr/bin/python3; fi
+
 # Copy uv runtime binary
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
