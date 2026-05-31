@@ -52,7 +52,8 @@ RUN uv sync --no-dev --group gpu
 # compiled extensions are built in the builder stage (not at runtime). Build
 # wheels for known native deps to make installation deterministic.
 RUN /workspace/.venv/bin/python -m pip install --upgrade pip setuptools wheel && \
-    /workspace/.venv/bin/pip install --no-deps --force-reinstall /workspace || true && \
+    # Install the project along with its declared dependencies into the venv
+    /workspace/.venv/bin/pip install --force-reinstall /workspace && \
     mkdir -p /wheels && \
     /workspace/.venv/bin/pip wheel --no-deps --wheel-dir=/wheels llama-cpp-python==0.3.16 || true && \
     /workspace/.venv/bin/pip wheel --no-deps --wheel-dir=/wheels llvmlite || true && \
