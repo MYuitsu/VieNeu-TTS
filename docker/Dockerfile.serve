@@ -100,6 +100,6 @@ EXPOSE 23333
 # Use system Python to run the serve module; venv binaries are on PATH so installed
 # packages and console scripts will be available. Using system Python avoids
 # occasional missing-symlink exec errors during container init.
-ENTRYPOINT ["/usr/bin/python3", "-u", "src/vieneu/serve.py"]
+ENTRYPOINT ["/workspace/.venv/bin/python", "-u", "src/vieneu/serve.py"]
 # Default arguments
 CMD ["--backend", "vllm", "--model", "pnnbao-ump/VieNeu-TTS", "--port", "23333", "--tunnel"]
