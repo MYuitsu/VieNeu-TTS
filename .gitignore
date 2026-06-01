@@ -13,6 +13,9 @@ wheels/
 outputs/
 .env
 
+# Hugging Face cache
+hf_cache/
+
 # Finetune Data & Checkpoints
 finetune/dataset/
 finetune/output/
